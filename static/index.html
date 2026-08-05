@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mailhub</title>
+<style>
+  /* Plain functional shell — the Telegraph Exchange skin lands in the design phase. */
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; background: #f5f4f0; color: #1c1b18; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px;
+           background: #1c1b18; color: #f5f4f0; flex-wrap: wrap; }
+  header h1 { font-size: 16px; letter-spacing: .2em; margin: 0; }
+  #search { flex: 1; min-width: 200px; padding: 6px 10px; border: 0; }
+  #chips button { margin-right: 6px; padding: 4px 10px; cursor: pointer; }
+  #chips button.on { background: #1c1b18; color: #f5f4f0; }
+  main { display: grid; grid-template-columns: minmax(320px, 1fr) 2fr; height: calc(100vh - 52px); }
+  #list { overflow-y: auto; border-right: 1px solid #ccc; }
+  .row { padding: 10px 14px; border-bottom: 1px solid #e2e0d8; cursor: pointer; }
+  .row:hover { background: #ecebe4; }
+  .row.unread .subj { font-weight: 700; }
+  .row .meta { display: flex; justify-content: space-between; font-size: 12px; color: #6d6a60; }
+  .row .snip { font-size: 13px; color: #6d6a60; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 11px; background: #d9d6ca; padding: 1px 6px; border-radius: 3px; }
+  #reader { overflow-y: auto; padding: 20px 24px; }
+  #reader iframe { width: 100%; min-height: 60vh; border: 1px solid #ccc; background: #fff; }
+  #reader pre { white-space: pre-wrap; background: #fff; padding: 16px; border: 1px solid #ccc; }
+  #reader .hdr a { font-size: 13px; }
+  .empty { padding: 40px; color: #6d6a60; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MAILHUB</h1>
+  <span id="chips"></span>
+  <input id="search" type="search" placeholder="Search all accounts…">
+  <button id="syncbtn" title="Sync now">↻</button>
+</header>
+<main>
+  <div id="list"><div class="empty">Loading…</div></div>
+  <div id="reader"><div class="empty">Select a message</div></div>
+</main>
+<script>
+let account = null, q = "", debounce = null;
+
+const esc = s => (s || "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function loadAccounts() {
+  const { accounts } = await (await fetch("api/accounts")).json();
+  const chips = document.getElementById("chips");
+  chips.innerHTML = "";
+  const all = document.createElement("button");
+  all.textContent = "All";
+  all.className = account === null ? "on" : "";
+  all.onclick = () => { account = null; refresh(); };
+  chips.appendChild(all);
+  for (const a of accounts) {
+    const b = document.createElement("button");
+    b.textContent = `${a.display_name || a.email} (${a.unread_count || 0})`;
+    b.className = account === a.id ? "on" : "";
+    b.onclick = () => { account = a.id; refresh(); };
+    chips.appendChild(b);
+  }
+}
+
+async function loadList() {
+  const p = new URLSearchParams();
+  if (q) p.set("q", q);
+  if (account !== null) p.set("account", account);
+  const { messages } = await (await fetch("api/messages?" + p)).json();
+  const list = document.getElementById("list");
+  if (!messages.length) {
+    list.innerHTML = `<div class="empty">${q ? "No matches." : "No mail synced yet."}</div>`;
+    return;
+  }
+  list.innerHTML = messages.map(m => `
+    <div class="row ${m.is_read ? "" : "unread"}" data-id="${m.id}">
+      <div class="meta"><span><span class="badge">${esc(m.account_email)}</span>
+        ${esc(m.from_name || m.from_email)}</span>
+        <span>${esc((m.date_utc || "").slice(0, 16).replace("T", " "))}</span></div>
+      <div class="subj">${esc(m.subject) || "(no subject)"}</div>
+      <div class="snip">${esc(m.snippet)}</div>
+    </div>`).join("");
+  for (const el of list.querySelectorAll(".row"))
+    el.onclick = () => openMessage(+el.dataset.id, el);
+}
+
+function gmailLink(m) {
+  if (!m.message_id) return "";
+  const id = encodeURIComponent(m.message_id.replace(/^<|>$/g, ""));
+  return `https://mail.google.com/mail/u/${encodeURIComponent(m.account_email)}/#search/rfc822msgid%3A${id}`;
+}
+
+async function openMessage(id, rowEl) {
+  const m = await (await fetch("api/messages/" + id)).json();
+  const reader = document.getElementById("reader");
+  const link = gmailLink(m);
+  reader.innerHTML = `
+    <div class="hdr">
+      <h2>${esc(m.subject) || "(no subject)"}</h2>
+      <p>${esc(m.from_name)} &lt;${esc(m.from_email)}&gt;
+         — ${esc(m.account_email)} — ${esc(m.date_utc)}</p>
+      ${link ? `<a href="${link}" target="_blank" rel="noopener">Open in Gmail ↗</a>` : ""}
+    </div>
+    ${m.body_html
+      ? `<iframe sandbox srcdoc="${esc(m.body_html)}"></iframe>`
+      : `<pre>${esc(m.body_text)}</pre>`}`;
+  if (!m.is_read) {
+    fetch(`api/messages/${id}/read`, { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ read: true }) });
+    if (rowEl) rowEl.classList.remove("unread");
+  }
+}
+
+function refresh() { loadAccounts(); loadList(); }
+
+document.getElementById("search").addEventListener("input", e => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => { q = e.target.value.trim(); loadList(); }, 250);
+});
+document.getElementById("syncbtn").onclick = async () => {
+  await fetch("api/sync", { method: "POST" });
+  setTimeout(refresh, 3000);
+};
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
