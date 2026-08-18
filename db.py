@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS sync_state (
     PRIMARY KEY (account_id, folder)
 );
 
+CREATE TABLE IF NOT EXISTS rules (
+    id INTEGER PRIMARY KEY,
+    position INTEGER NOT NULL DEFAULT 0,
+    field TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    lane TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     subject, body_text, from_email,
     content='messages', content_rowid='id'
@@ -75,6 +84,15 @@ def connect(path):
     return conn
 
 
+def _migrate(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+    if "lane" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN lane TEXT DEFAULT ''")
+    if "is_bulk" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN is_bulk INTEGER DEFAULT 0")
+
+
 def init_db(conn):
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
