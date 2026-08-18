@@ -37,14 +37,17 @@ def create_app(db_path=None, daemon=None):
     def list_messages():
         q = request.args.get("q", "").strip()
         account = request.args.get("account", type=int)
+        lane = request.args.get("lane") or None
         limit = min(request.args.get("limit", 100, type=int), 500)
         offset = request.args.get("offset", 0, type=int)
         if q:
             msgs = store.search_messages(conn(), q, limit=limit)
             if account is not None:
                 msgs = [m for m in msgs if m["account_id"] == account]
+            if lane:
+                msgs = [m for m in msgs if m.get("lane") == lane]
         else:
-            msgs = store.list_messages(conn(), account_id=account,
+            msgs = store.list_messages(conn(), account_id=account, lane=lane,
                                        limit=limit, offset=offset)
         return jsonify({"messages": msgs})
 
@@ -61,6 +64,31 @@ def create_app(db_path=None, daemon=None):
             return jsonify({"error": "no such message"}), 404
         body = request.get_json(silent=True) or {}
         store.mark_read(conn(), mid, bool(body.get("read", True)))
+        return jsonify({"ok": True})
+
+    @app.get("/api/lanes")
+    def lanes():
+        return jsonify({"lanes": store.lane_counts(conn())})
+
+    @app.get("/api/rules")
+    def get_rules():
+        return jsonify({"rules": store.list_rules(conn())})
+
+    @app.post("/api/rules")
+    def post_rule():
+        body = request.get_json(silent=True) or {}
+        try:
+            rid = store.add_rule(conn(), body.get("field"),
+                                 body.get("pattern"), body.get("lane"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        store.reclassify_all(conn())
+        return jsonify({"id": rid})
+
+    @app.delete("/api/rules/<int:rid>")
+    def del_rule(rid):
+        store.delete_rule(conn(), rid)
+        store.reclassify_all(conn())
         return jsonify({"ok": True})
 
     @app.get("/api/accounts")
