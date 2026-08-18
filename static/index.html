@@ -11,8 +11,16 @@
            background: #1c1b18; color: #f5f4f0; flex-wrap: wrap; }
   header h1 { font-size: 16px; letter-spacing: .2em; margin: 0; }
   #search { flex: 1; min-width: 200px; padding: 6px 10px; border: 0; }
-  #chips button { margin-right: 6px; padding: 4px 10px; cursor: pointer; }
-  #chips button.on { background: #1c1b18; color: #f5f4f0; }
+  #chips button, #lanes button { margin-right: 6px; padding: 4px 10px; cursor: pointer; }
+  #chips button.on, #lanes button.on { background: #1c1b18; color: #f5f4f0; }
+  #lanes { border-left: 1px solid #6d6a60; padding-left: 12px; }
+  #rulespanel { display: none; padding: 10px 16px; background: #ecebe4;
+                border-bottom: 1px solid #ccc; }
+  #rulespanel.open { display: block; }
+  #rulespanel .rule { padding: 3px 0; font-size: 13px; }
+  #rulespanel .rule button { margin-left: 8px; cursor: pointer; }
+  #rulespanel form { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  #rulespanel .err { color: #8a2f20; font-size: 13px; margin-left: 8px; }
   main { display: grid; grid-template-columns: minmax(320px, 1fr) 2fr; height: calc(100vh - 52px); }
   #list { overflow-y: auto; border-right: 1px solid #ccc; }
   .row { padding: 10px 14px; border-bottom: 1px solid #e2e0d8; cursor: pointer; }
@@ -32,15 +40,39 @@
 <header>
   <h1>MAILHUB</h1>
   <span id="chips"></span>
+  <span id="lanes"></span>
   <input id="search" type="search" placeholder="Search all accounts…">
+  <button id="rulesbtn" title="Lane rules">Rules</button>
   <button id="syncbtn" title="Sync now">↻</button>
 </header>
+<div id="rulespanel">
+  <div id="rulelist"></div>
+  <form id="ruleform">
+    <select id="rfield">
+      <option value="from_domain">From domain</option>
+      <option value="from_email">From address</option>
+      <option value="subject">Subject</option>
+    </select>
+    <input id="rpattern" placeholder="contains…" required>
+    <select id="rlane">
+      <option value="people">People</option>
+      <option value="newsletters">Newsletters</option>
+      <option value="receipts">Receipts</option>
+      <option value="notifications">Notifications</option>
+    </select>
+    <button type="submit">Add rule</button>
+    <span class="err" id="ruleerr"></span>
+  </form>
+</div>
 <main>
   <div id="list"><div class="empty">Loading…</div></div>
   <div id="reader"><div class="empty">Select a message</div></div>
 </main>
 <script>
-let account = null, q = "", debounce = null;
+let account = null, lane = null, q = "", debounce = null;
+const LANES = ["people", "newsletters", "receipts", "notifications"];
+const LANE_LABEL = { people: "People", newsletters: "Newsletters",
+                     receipts: "Receipts", notifications: "Notifications" };
 
 const esc = s => (s || "").replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -63,10 +95,49 @@ async function loadAccounts() {
   }
 }
 
+async function loadLanes() {
+  const { lanes } = await (await fetch("api/lanes")).json();
+  const el = document.getElementById("lanes");
+  el.innerHTML = "";
+  const all = document.createElement("button");
+  all.textContent = "All lanes";
+  all.className = lane === null ? "on" : "";
+  all.onclick = () => { lane = null; refresh(); };
+  el.appendChild(all);
+  for (const ln of LANES) {
+    const c = lanes[ln] || { total: 0, unread: 0 };
+    const b = document.createElement("button");
+    b.textContent = `${LANE_LABEL[ln]} (${c.unread || 0})`;
+    b.className = lane === ln ? "on" : "";
+    b.onclick = () => { lane = ln; refresh(); };
+    el.appendChild(b);
+  }
+}
+
+async function loadRules() {
+  const { rules } = await (await fetch("api/rules")).json();
+  const el = document.getElementById("rulelist");
+  el.innerHTML = rules.length ? "" : "<em>No rules yet — heuristics only.</em>";
+  for (const r of rules) {
+    const d = document.createElement("div");
+    d.className = "rule";
+    d.textContent = `${r.field} contains "${r.pattern}" → ${LANE_LABEL[r.lane] || r.lane}`;
+    const del = document.createElement("button");
+    del.textContent = "×";
+    del.onclick = async () => {
+      await fetch("api/rules/" + r.id, { method: "DELETE" });
+      loadRules(); refresh();
+    };
+    d.appendChild(del);
+    el.appendChild(d);
+  }
+}
+
 async function loadList() {
   const p = new URLSearchParams();
   if (q) p.set("q", q);
   if (account !== null) p.set("account", account);
+  if (lane !== null) p.set("lane", lane);
   const { messages } = await (await fetch("api/messages?" + p)).json();
   const list = document.getElementById("list");
   if (!messages.length) {
@@ -113,7 +184,28 @@ async function openMessage(id, rowEl) {
   }
 }
 
-function refresh() { loadAccounts(); loadList(); }
+function refresh() { loadAccounts(); loadLanes(); loadList(); }
+
+document.getElementById("rulesbtn").onclick = () => {
+  const p = document.getElementById("rulespanel");
+  p.classList.toggle("open");
+  if (p.classList.contains("open")) loadRules();
+};
+document.getElementById("ruleform").onsubmit = async e => {
+  e.preventDefault();
+  const err = document.getElementById("ruleerr");
+  err.textContent = "";
+  const res = await fetch("api/rules", { method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      field: document.getElementById("rfield").value,
+      pattern: document.getElementById("rpattern").value,
+      lane: document.getElementById("rlane").value }) });
+  const body = await res.json();
+  if (!res.ok) { err.textContent = body.error || "failed"; return; }
+  document.getElementById("rpattern").value = "";
+  loadRules(); refresh();
+};
 
 document.getElementById("search").addEventListener("input", e => {
   clearTimeout(debounce);
