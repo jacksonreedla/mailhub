@@ -75,4 +75,5 @@ def parse_rfc822(raw: bytes) -> dict:
         "body_text": body_text,
         "body_html": body_html,
         "snippet": snippet,
+        "is_bulk": 1 if (msg.get("List-Unsubscribe") or msg.get("List-Id")) else 0,
     }
