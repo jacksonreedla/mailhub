@@ -7,6 +7,7 @@ import traceback
 import imapclient
 
 import db
+import rules as rules_mod
 import store
 from mailparse import parse_rfc822
 
@@ -28,6 +29,7 @@ def sync_account(conn, account, client=None, folder=DEFAULT_FOLDER,
     try:
         acct_id = store.upsert_account(conn, account.email, account.provider,
                                        account.display_name)
+        user_rules = store.list_rules(conn)
         info = client.select_folder(folder, readonly=True)
         uidvalidity = int(info.get(b"UIDVALIDITY", info.get("UIDVALIDITY", 0)))
 
@@ -57,8 +59,9 @@ def sync_account(conn, account, client=None, folder=DEFAULT_FOLDER,
                 raw = data.get(b"RFC822") or data.get("RFC822")
                 if raw is None:
                     continue
-                store.upsert_message(conn, acct_id, folder, uid,
-                                     parse_rfc822(raw))
+                parsed = parse_rfc822(raw)
+                parsed["lane"] = rules_mod.classify(parsed, user_rules)
+                store.upsert_message(conn, acct_id, folder, uid, parsed)
                 stored += 1
             # advance state after every batch so a crash never refetches
             store.set_sync_state(conn, acct_id, folder, uidvalidity, chunk[-1])
